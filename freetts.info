@@ -1,0 +1,5 @@
+; $Id$
+name = "Freetts Interface"
+description = "creates audio files from text content"
+core = 6.x
+package = epublisher

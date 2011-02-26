@@ -1,0 +1,472 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * This module interfaces Drupal with either a locale or remote freeTTS system.
+ *
+ * Features:
+ * Supports MBROLA voices where applicable.
+ * support local or remote LAME conversion to .mp3.
+ * supports local or remote storage.
+ *
+ * @todo test database updates
+ * with new functions calling direct from testpage
+ *
+ * how will max_php exection time affect lame encoding? -> not sure how exec handles processes
+ *
+ * look at lame and ffmpeg commands
+ * doh! cannae. I gots no interweb!!!!
+ * @todo check what happens when we have html in our content
+ * @todo give control over voice settings
+ * @todo make also possible to use espeak and mbrola
+ * @todo populate ID3 Metatags for MP3s -> check for module with hooks....
+ * @todo check config for java in admin screen and refer to documentation if not working
+ * i.e. path/to/java + class path
+ * give options for admin top place alter and customize these if need be.
+ */
+
+define('FREETTS_TYPE_FIELDS_WEIGHT', 31);
+define('FREETTS_DEFAULT_FREETTS_JAR_PATH', 'sites/all/libraries/freetts/lib/freetts.jar');
+$tts_update = '';
+$downloaded = '';
+
+/*
+ * Implementation of hook_perm().
+ * @todo rename permissions to be more drupal standard
+ */
+function freetts_perm() {
+  return array('manage freetts_Interface', 'freetts_Interface convert to audio', 'download freetts audio documents');
+}
+
+//
+
+/*
+ * Implementation of hook_menu().
+ */
+function freetts_menu() {
+
+
+  //menu link to create audio documents
+  $items['freetts/%'] = array(
+    'title'             => 'Processing Audio',
+    'access arguments'  => array('freetts_Interface convert to audio'),
+    'page callback'     => 'freetts_page',
+    'page arguments'    => array(1),
+    'type'              => MENU_CALLBACK,
+  );
+  $items['admin/freetts/manage']=array(
+    'title'             => 'view all published documents',
+    'page callback'     => 'freetts_published',
+    'access arguments'  => array('manage Freetts_Interface'),
+    'type'              => MENU_CALLBACK,
+  );
+  $items['admin/settings/freetts'] = array(
+    'title'             => 'freetts',
+    'description'       => 'adds a audio download link to all nodes',
+    'page callback'     => 'drupal_get_form',
+    'page arguments'    => array('tts_settings'),
+    'access arguments'  => array('access administration pages'),
+    'file'              => 'freetts.admin.inc',
+  );
+
+
+
+  //pjm
+  //create a test page for drupal access to shell
+  $items['testpage/freetts'] = array(
+      'title' => 'test freetts',
+      'description' => 'Page for testing menu callback to call shell command',
+      'page callback' => 'freetts_create_audio',
+      'access callback' => TRUE,
+  );
+
+  return $items;
+}
+
+// call this page
+
+function freetts_create_audio($nid) {
+
+  //get location of freetts.jar
+  $freetts_jar_path = variable_get('freetts_jar_path', FREETTS_DEFAULT_FREETTS_JAR_PATH);
+
+  // check freettts directory exists in files and if not create.
+  $freetts_dir = file_create_path('freetts');
+  file_check_directory($freetts_dir, FILE_CREATE_DIRECTORY);
+  
+  //set temp directory
+  $tmp_dir = file_directory_temp();
+  
+  //get node body and title
+  $node = node_load($nid);
+  $body = $node->body;
+  $title = $node->title;
+
+  //clean file name
+  $filename = _freetts_clean_file_name($title);
+
+  //create path for tmp file locations
+  $txt_file = file_create_filename($filename . '.txt', $tmp_dir);
+
+  //store node text in a text file in temp directory
+  file_save_data($body, $txt_file, FILE_EXISTS_REPLACE);
+
+  //set path for temporary wav file
+  $wav = file_create_filename($filename.'.wav', $tmp_dir);
+
+  //we want to clobber previous version if it exists
+  //@todo - if title is changed and audio is updated previous file mp3 will be left where it is
+  $mp3 =  $freetts_dir . '/' . $filename . '.mp3';
+
+  //text to wav
+  exec('java -jar ' . $freetts_jar_path . ' -dumpAudio ' . $wav . ' -file ' . $txt_file);
+
+  //@todo check success of command line arguments
+  //@todo expand on mp3 tags
+  //wav to mp3 and store in files/freetts. Force writing id3 tags.
+  exec('lame --add-id3v2 -T ' . $wav . ' ' . $mp3);
+
+  return $mp3;
+}
+
+//
+//function _freetts_convert_text_to_wav_with_freetts($source, $destination){
+//  variable_get('freetts_jar_path', FREETTS_DEFAULT_FREETTS_JAR_PATH);
+//
+//}
+//
+//function _freetts_convert_wav_to_mp3_with_lame($source, $destination){
+//
+//}
+
+/*
+ * Implementation of hook_link().
+ */
+
+
+//ben is storing the full path as /path/to/foo.mp3
+//should I follow suit or begin to amend his code
+//don't want to break anything he has done
+
+function freetts_link($type, $node = NULL, $teaser = FALSE) {
+  $nodeid = $node->nid ;
+  $links  = array();
+  if (user_access('download freetts audio documents')) {
+    // Provide a link if a audio file already exists.
+  //  $result = db_query_range('SELECT * FROM {freetts}  WHERE refid =%d', $nodeid , 0 , 1);
+    $result = db_fetch_object(db_query("SELECT * FROM {freetts} WHERE refid = '%d'", $nodeid));
+    //dsm($result);
+
+//don't need a while here
+    if ($result) {
+      $path_to_mp3 = $result->fpath.'/'.$result->filename;
+      $links['freetts_download'] = array(
+        'title'      => t('Audio Version'),
+        'href'       => $path_to_mp3,
+        'attributes' => array('title' => t('listen / download audio in .mp3 format ( right click and choose save as to download) '))
+      );
+      $dl_link='true';
+    }
+  }
+
+  //boolean for $dl_link
+  if (($type == 'node') && ($dl_link != 'true') && (user_access('freetts_Interface convert to audio'))) {
+
+    $links['freetts_create'] = array(
+      'title' => t('create TTS audio'),
+      'href' => 'freetts/' . $node->nid,
+      'attributes' => array('title' => t('convert this node into audio .mp3 format'))
+    );
+  }
+  return $links;
+}
+
+/*
+ * Implementation of hook_form_alter().
+ */
+function freetts_form_alter(&$form, &$form_state, $form_id) {
+  if ( ($form_id == 'node_type_form') || ( isset($form['type'])  && isset($form['#node']) && $form['type']['#value'] .'_node_form' == $form_id)) {
+    $form['auto_tts'] = array(
+      '#type'           => 'fieldset',
+      '#title'          => t('freeTTS'),
+      '#collapsible'    => TRUE,
+      '#collapsed'      => TRUE,
+    );
+    $form['auto_tts']['freetts_auto_create'] = array(
+      '#type'           => 'checkbox',
+      '#title'          => t('create mp3 version'),
+      //should have a default value per content type
+      //not quite sure how to do this -> a wee bit of reading me thinks
+
+        ////should we really have html here?
+        //html should either be inside post pre in array or handled by theme function.
+      
+    );
+  }
+}
+
+/*
+ * Implementation of hook_content_extra_fields().
+ */
+function freetts_content_extra_fields($type_name) {
+  $fields['auto_tts'] = array(
+    'label'       => t('audio versions options'),
+    'description' => t('Freetts module form.'),
+    'weight'      => FREETTS_TYPE_FIELDS_WEIGHT,
+  );
+  return $fields;
+}
+
+
+//@todo make a choice of tools to process i.e. local / espeak
+function freetts_page($id) {
+
+  //
+  $node      = node_load($id);
+  freetts_curl($node);
+  //need to
+
+  $returnpath = 'node/' . $id ;
+  drupal_goto($returnpath );
+}
+
+///*
+// * Implementation of hook_nodeapi().
+// */
+//function freetts_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+//  $auto=$node->freetts_auto_create ;
+//  //not quite sure what this does?
+//
+//  //variable get freetts need to pull in a variable for use server
+//  //echo "<br/> auto =" . $auto ."<br/>" ;
+// //single quotes
+//  if ( ($op == "insert") && ($auto==1) ) {
+//    //if variable_get(freetts_render_locally{
+//    // call local
+//    //else call external
+//    freetts_curl($node);
+//    //call db update from here -> return meaningful information
+//    //db insert
+//  }
+//  if ( ($op == "update") && ($auto==1)) {
+//    freetts_curl($node);
+//    //db_update
+//  }
+//  if ( ($op == "delete") && ($auto==1)) {
+//    // Actions to perform if the node is deleted.
+//    $delete_query='DELETE FROM {freetts} WHERE refid =' . $id ;  //fix all of the sql for drupal safety.
+//    //DELETE FROM {freetts} WHERE refid =%id', array(%id => $id)
+//    db_query($delete_query);
+//  }
+//
+//}
+
+
+/*
+ * Implementation of hook_nodeapi().
+ */
+
+function freetts_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+
+  //checkbox on node for creation of mp3 with node
+  $auto = $node->freetts_auto_create;
+  
+  $use_remote_server = variable_get(freetts_use_remote_server, FALSE);
+
+  $nid = $node->nid;
+  $mp3 = ''; //the full path to an newly created mp3 file
+  //@todo refactor calls to process audio _process_audio
+
+
+  if ($auto == TRUE) {
+
+
+    //edit this and poss. factor out call to processor
+    switch ($op) {
+
+      case 'update':
+      case 'insert':
+
+        if ($use_remote_server) {
+          //process on external server
+          freetts_curl($node);
+        } else {
+          //create mp3 file on local server
+          $mp3 = freetts_create_audio($nid);
+        }
+        //dsm($mp3);
+        //@todo check for success and is actual file
+        //should probs use file check directory
+        if (isset($mp3) && $mp3 != '') {
+          _freetts_update_database($mp3, $nid);
+        }
+        break;
+        
+      case 'delete':
+
+        $delete_query = 'DELETE FROM {freetts} WHERE refid = %d';
+        //@todo we need to remove the mp3 file as well!
+        db_query($delete_query, $nid);
+        break;
+    }
+  }
+}
+
+
+/*
+ * function freetts_curl()
+ *
+
+ */
+
+ /**
+ * This function carries communicates with the freetts_remote.php file to create the mp3 file.
+ * It also downloads it to the local server and records the filein the database.
+ *
+ * The use of Curl here is required in order to ensure the correct POST communication and to allow for an accurate response from the FreeTTS machine, which could be either local or remote.
+ *
+ *
+ * @param $node
+ *   The only parameter that the freetts_curl function accepts is the Drupal $node variable.
+ *
+ * @return
+ *   This function does not have a return variable set.
+ */
+function freetts_curl($node) {
+  $node_title = $node->title;
+  $body       = $node->body;
+  $id         = $node->nid ;
+  $user_key   = variable_get('freetts_user_key', 0);
+  $user_ssid  = variable_get('freetts_user_ssid', 0);
+  $url        = variable_get('freetts_remote_url', 0) ;
+  $url       .= 'freetts_remote.php' ;
+  $filename   = preg_replace('/\s/', '-', $node_title);
+  $content    = $node_title . '   ';
+  $content   .= $body ;
+  $path       = file_directory_path();
+  $tts_update = '' ;
+  //echo $url ;
+  //If the variable_get values have not been set we need to throw an error.
+  if ( ($user_key == '0') or ( $user_ssid == '0') or ( $url == '0' ) ) {
+    $freetts_admin_settings='error';
+    drupal_set_message(t('User key, ssid or url were missing, cannot proceed.'));
+  }
+
+  //Set POST variables for sending.
+  $fields = array(
+    'key'      => urlencode($user_key),
+    'ssid'     => urlencode($user_ssid),
+    'content'  => urlencode($content),
+    'filename' => urlencode($filename),
+  );
+
+  //Url-ify the data for the POST.
+  foreach ( $fields as $key => $value) {
+    $fields_string .= $key . '=' . $value . '&';
+  }
+  rtrim($fields_string , '&');
+
+  //Do curl.
+  if (  $freetts_admin_settings != 'error') {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, count($fields));
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $fields_string);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    $result = curl_exec($ch);
+    curl_close($ch);
+  // Prepare output.
+    drupal_set_message($result);
+  }
+
+  // Error handling.
+  if ( ($result == 'error1') or  ( $result == 'error2')) {
+    $downloaded='error';
+    drupal_set_message(t('User key or ssid were missing, cannot create file.'));
+  }
+    if ( $result == 'error3') {
+    $downloaded='error';
+    drupal_set_message(t('Content was missing, cannot create file.'));
+  }
+  if ( ($result == 'error4') or  ( $result == 'error5')) {
+    $downloaded='error';
+    drupal_set_message(t('User key or ssid were incorrect, cannot create file.'));
+  }
+  if ( $result == 'error6' ) {
+    $downloaded='error';
+    drupal_set_message(t('there was an error in the TTS service.'));
+  }
+  if ( $result == '' ) {
+    $downloaded='error';
+    drupal_set_message(t('no response from TTS service, please check your settings.'));
+  }
+
+  //If there was not an error we can proceed.
+  if ( ($downloaded != 'error') &&  ( $freetts_admin_settings != 'error')  ) {
+
+    // Download file.
+    $full_path= $path . '/' . $filename . '.mp3';
+    drupal_set_message(t($full_path));
+    drupal_set_message(t($result));
+    $freetts_remote_uri=
+    copy($result , $full_path);
+    drupal_set_message(t('mp3 created'));
+
+
+    //@ben has full path as in path/to/foo.mp3 path and filename are now separate in the database.
+    //use case: we want to structure directories (rather than all mp3s going in
+    //to the same one) and titles may have long names -> don't want to break the 255 char limit
+
+    /* pjm 01 */
+    _freetts_update_database($full_path, $id);
+//    $result = db_query_range('SELECT ttsid , filename , fpath , created , refid   FROM {freetts}  WHERE refid =%d', $nodeid, 0, 1);
+//    while ( $test_row = db_fetch_array($result)) {
+//      if (isset($test_row['ttsid']) && $test_row['ttsid'] != '') {
+//        $query='UPDATE {freetts} SET  filename="' . $filename . '", fpath="' . $full_path . '", created="' . $created . '" WHERE refid=' . $id ;
+//        db_query($query);
+//        $set='run';
+//        drupal_set_message(t('update was performed successfully'));
+//        $tts_update= 'TRUE' ;
+//      }
+//    }
+//
+//    if ( $tts_update != 'TRUE' ) {
+//      $query='INSERT INTO  {freetts} 	(filename,fpath,created,refid) 	 VALUES ("' . $filename . '","' . $full_path . '","' . $created . '","' . $id . '") ';
+//      db_query($query);
+//      $set='run';
+//      drupal_set_message(t('insert was performed successfully'));
+//    }
+  }
+}
+
+function _freetts_update_database($path, $nid) {
+
+  //separate path from filename
+  $filename = file_check_path($path);
+
+  $result = db_fetch_object(db_query("SELECT ttsid FROM {freetts}  WHERE refid = '%d'", $nid));
+
+  //setup record object
+  $table = 'freetts';
+  $record = new stdClass();
+  $record->filename = $filename;
+  $record->fpath = $path;
+  $record->created = time();
+  $record->refid = $nid;
+  $record->ttsid = $result->ttsid;
+
+
+  //if record previously exists, update it
+  if ($result) {
+    return drupal_write_record($table, $record, 'ttsid');
+  }
+  
+  //otherwise insert new record
+  return drupal_write_record($table, $record);
+}
+
+// strip non alpha numeric characters (except - and .) and replace with underscores
+function _freetts_clean_file_name($title){
+  return strtolower(preg_replace("/[^\w\d\.-]/", "_", $title));
+}

@@ -1,0 +1,67 @@
+<?php
+// $Id$
+
+/**
+ * @file
+ * Install, update and uninstall functions for the freetts module.
+ */
+function freetts_schema() {
+  // Schema for freetts table.
+  //@TODO add time for length of an mp3 - important for daisy
+
+  $schema['freetts'] = array(
+      'description' => t('Table containing details of tts audio documents'),
+      'fields' => array(
+          'ttsid' => array(
+              'description' => t('unique value for each entry in this DB( this helps sorting and version control if added later)'),
+              'type' => 'serial',
+          ),
+          'filename' => array(
+              'description' => t('Name that the document will be given.'),
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'default' => '',
+          ),
+          'fpath' => array(
+              'description' => t('The path to this file ( usually defaults to files dir) '),
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => FALSE,
+              'default' => '',
+          ),
+          'created' => array(
+              'description' => t('Date the last file was generated'),
+              'type' => 'int',
+              'not null' => TRUE,
+              'default' => 0,
+          ),
+          'refid' => array(
+              'description' => t('Id of the node that the content came from'),
+              'type' => 'int',
+              'not null' => TRUE,
+              'default' => 0,
+          )
+      ),
+      'primary key' => array('ttsid')
+  );
+
+  return $schema;
+}
+
+function freetts_install() {
+  // Create my tables.
+  drupal_install_schema('freetts');
+}
+function freetts_uninstall() {
+  // Drop my tables.
+  drupal_uninstall_schema('freetts');
+  variable_del('freetts_user_key'  , 0);
+  variable_del('freetts_user_ssid' , 0);
+  variable_del('freetts_remote_url', 0) ;
+  variable_del('freetts_jar_path');
+  variable_del('freetts_use_remote_server');
+
+
+  //add use remote server
+}
